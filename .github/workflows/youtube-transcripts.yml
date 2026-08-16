@@ -1,0 +1,73 @@
+name: YouTube transcripts
+
+on:
+  push:
+    paths:
+      - '.github/workflows/youtube-transcripts.yml'
+  workflow_dispatch:
+
+jobs:
+  transcripts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare
+        run: |
+          python -m pip install --upgrade pip
+          pip install youtube-transcript-api yt-dlp
+          mkdir -p transcripts
+
+      - name: Fetch transcripts
+        shell: bash
+        run: |
+          cat > /tmp/fetch.py <<'PY'
+          from pathlib import Path
+          from youtube_transcript_api import YouTubeTranscriptApi
+          ids = ['MbteRhB3rRM','pPP1TAemGuw','wwAujcCrMfA','txZ_lxFLW2I','eXPreHDXi94']
+          api = YouTubeTranscriptApi()
+          for vid in ids:
+              out = Path('transcripts') / f'{vid}.txt'
+              try:
+                  ts = api.list(vid)
+                  candidates = list(ts)
+                  pick = next((t for t in candidates if str(t.language_code).lower().startswith('ru')), None)
+                  if pick is None:
+                      pick = next((t for t in candidates if str(t.language_code).lower().startswith('en')), None)
+                  if pick is None and candidates:
+                      pick = candidates[0]
+                  if pick is None:
+                      raise RuntimeError('No transcript tracks found')
+                  rows = pick.fetch()
+                  with out.open('w', encoding='utf-8') as f:
+                      f.write(f'# video_id: {vid}\n# language: {pick.language} ({pick.language_code})\n# generated: {pick.is_generated}\n\n')
+                      for r in rows:
+                          start = getattr(r, 'start', 0.0)
+                          text = getattr(r, 'text', '')
+                          f.write(f'[{start:8.2f}] {text}\n')
+                  print('OK youtube-transcript-api', vid, pick.language_code)
+              except Exception as e:
+                  print('FAIL youtube-transcript-api', vid, repr(e))
+          PY
+          python /tmp/fetch.py
+
+          for id in MbteRhB3rRM pPP1TAemGuw wwAujcCrMfA txZ_lxFLW2I eXPreHDXi94; do
+            if [ ! -s "transcripts/${id}.txt" ]; then
+              echo "Trying yt-dlp for $id"
+              mkdir -p /tmp/ydl
+              yt-dlp --skip-download --write-subs --write-auto-subs --sub-langs 'ru.*,ru,en.*,en' --sub-format vtt -o "/tmp/ydl/${id}.%(ext)s" "https://www.youtube.com/watch?v=${id}" || true
+              file=$(find /tmp/ydl -type f -name "${id}*.vtt" | head -n 1)
+              if [ -n "$file" ]; then
+                cp "$file" "transcripts/${id}.vtt"
+              else
+                echo "No transcript could be fetched for ${id}" > "transcripts/${id}.error.txt"
+              fi
+            fi
+          done
+
+          ls -lah transcripts
+
+      - name: Upload transcripts
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-transcripts
+          path: transcripts/
+          if-no-files-found: error
